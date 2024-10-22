@@ -3,15 +3,36 @@ from utils.config import get_config
 
 config = get_config()
 
-async def get_connection():
-    conn = await aiomysql.connect(
-        host=config['database']['host'],
-        port=config['database']['port'],
-        user=config['database']['user'],
-        password=config['database']['password'],
-        db=config['database']['database']
-    )
-    return conn
+# Connection pool (global)
+_pool = None
+
+async def init_mysql_pool():
+    global _pool
+    if _pool is None:
+        _pool = await aiomysql.create_pool(
+            host=config['database']['host'],
+            port=config['database']['port'],
+            user=config['database']['user'],
+            password=config['database']['password'],
+            db=config['database']['database'],
+            maxsize=config['database']['pool_size'],  # Use single pool_size
+        )
+        print(f"MySQL pool initialized with pool_size={config['database']['pool_size']}")
+    return _pool
+
+def get_pool():
+    global _pool
+    if _pool is None:
+        raise RuntimeError("MySQL pool is not initialized. Call init_mysql_pool() first.")
+    return _pool
+
+async def close_mysql_pool():
+    global _pool
+    if _pool is not None:
+        _pool.close()
+        await _pool.wait_closed()
+        _pool = None
+        print("MySQL pool closed.")
 
 async def update_import_filled_until(conn, sensor_db_id, import_filled_until):
     async with conn.cursor() as cur:

@@ -4,12 +4,13 @@ def group_data_into_intervals(device_info):
     # device_info is a list of dicts with 'day' and 'modified'
     # We need to group 'day's into intervals of consecutive days, max 1 month
 
-    # First, parse 'day's into datetime objects
+    # First, parse 'day's into datetime objects using the correct format
     days = []
     for item in device_info:
         day_str = item['day']
         try:
-            day_date = datetime.strptime(day_str, "%Y-%m-%d")
+            # Adjusted date format to match "YYYYMMDD"
+            day_date = datetime.strptime(day_str, "%Y%m%d")
             days.append(day_date)
         except ValueError:
             # Handle cases where day is not in expected format

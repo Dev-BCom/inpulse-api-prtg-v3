@@ -4,6 +4,7 @@ database:
   user: 'root'
   password: 'toor'
   database: 'inpulse'
+  pool_size: 20  
 
 api:
   base_url: 'http://192.168.10.174:1237'
