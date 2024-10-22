@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from contextlib import asynccontextmanager
 from services.sensor_service import process_sensors
 from utils.db_utils import init_mysql_pool, close_mysql_pool
@@ -14,6 +14,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 @app.get("/process-sensors")
-async def process_sensors_endpoint():
-    await process_sensors()
+async def process_sensors_endpoint(background_tasks: BackgroundTasks):
+    background_tasks.add_task(process_sensors)
     return {"message": "Processing started"}
