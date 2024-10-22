@@ -1,0 +1,17 @@
+database:
+  host: 'localhost'
+  port: 3306
+  user: 'root'
+  password: 'toor'
+  database: 'inpulse'
+
+api:
+  base_url: 'http://192.168.10.174:1237'
+  prtg_url: 'https://nms.bcomintelsat.com/api/inpulse.json'
+  apitoken: 'AIF34EXINKSKOB3Y4BQUQGOZYJQFRNB6OZFSJM2MJI======'
+
+logging:
+  level: 'INFO'
+
+prtg:
+  max_concurrent_requests: 10
