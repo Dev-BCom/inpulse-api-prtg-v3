@@ -1,3 +1,5 @@
+# utils/intrerval_utils.py
+
 from datetime import datetime, timedelta
 
 def group_data_into_intervals(device_info, import_start_date):
