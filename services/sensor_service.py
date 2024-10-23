@@ -150,53 +150,63 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
     # Step 1: Get device info
     progress_text = f"Sensor {sensor_id}: Getting device info"
     progress_task_id = progress.add_task(progress_text, total=1)
-    device_info = await get_device_info(parent_id, date_after)
-    if not device_info:
-        logging.warning(f"No device info found for sensor {sensor_id}. Skipping further processing.")
-        progress.update(progress_task_id, description=f"[red]Sensor {sensor_id}: No device info")
+    try:
+        device_info = await get_device_info(parent_id, date_after)
+        if not device_info:
+            logging.warning(f"No device info found for sensor {sensor_id}. Skipping further processing.")
+            progress.update(progress_task_id, description=f"[red]Sensor {sensor_id}: No device info")
+            progress.update(progress_task_id, completed=1)
+            progress.update(total_task, advance=1)
+            return
+
+        # Step 2: Process data into intervals
+        intervals = group_data_into_intervals(device_info, import_start_date_dt)
+        num_intervals = len(intervals)
+        logging.info(f"Sensor {sensor_id}: Generated {num_intervals} intervals.")
+
+        if num_intervals == 0:
+            logging.info(f"Sensor {sensor_id}: No intervals to process.")
+            progress.update(progress_task_id, description=f"Sensor {sensor_id}: [red]No intervals")
+            progress.update(progress_task_id, completed=1)
+            progress.update(total_task, advance=1)
+            return
+
+        # Update task total to number of intervals
+        progress.update(progress_task_id, total=num_intervals, completed=0)
+
+        # Step 3: Process intervals sequentially (oldest to newest)
+        for idx, interval in enumerate(intervals, start=1):
+            progress.update(
+                progress_task_id,
+                description=f"Sensor {sensor_id}: Processing interval {idx}/{num_intervals}"
+            )
+            await process_interval(
+                sensor,
+                interval,
+                progress,
+                active_requests,
+                active_requests_lock,
+                active_requests_task
+            )
+            progress.advance(progress_task_id, advance=1
+
+            )
+
+        logging.info(f"Finished processing for sensor {sensor_id}")
+        # Optionally, update to 'Done' before removing
+        progress.update(progress_task_id, description=f"Sensor {sensor_id}: [bold green]Done")
+        # Remove the task from the progress
+        progress.remove_task(progress_task_id)
+        progress.update(total_task, advance=1)
+    except Exception as e:
+        logging.error(f"Error processing sensor {sensor_id}: {e}")
+        progress.update(progress_task_id, description=f"Sensor {sensor_id}: [red]Error")
         progress.update(progress_task_id, completed=1)
         progress.update(total_task, advance=1)
-        return
-
-    # Step 2: Process data into intervals
-    intervals = group_data_into_intervals(device_info, import_start_date_dt)
-    num_intervals = len(intervals)
-    logging.info(f"Sensor {sensor_id}: Generated {num_intervals} intervals.")
-
-    if num_intervals == 0:
-        logging.info(f"Sensor {sensor_id}: No intervals to process.")
-        progress.update(progress_task_id, description=f"Sensor {sensor_id}: [red]No intervals")
-        progress.update(progress_task_id, completed=1)
-        progress.update(total_task, advance=1)
-        return
-
-    # Update task total to number of intervals
-    progress.update(progress_task_id, total=num_intervals, completed=0)
-
-    # Step 3: Process intervals sequentially (oldest to newest)
-    for idx, interval in enumerate(intervals, start=1):
-        progress.update(
-            progress_task_id,
-            description=f"Sensor {sensor_id}: Processing interval {idx}/{num_intervals}"
-        )
-        await process_interval(
-            sensor,
-            interval,
-            progress,
-            active_requests,
-            active_requests_lock,
-            active_requests_task
-        )
-        progress.advance(progress_task_id, advance=1)
-
-    logging.info(f"Finished processing for sensor {sensor_id}")
-    progress.update(progress_task_id, description=f"Sensor {sensor_id}: [bold green]Done")
-    progress.refresh()
-    progress.update(total_task, advance=1)
-
-    end_time = perf_counter()
-    elapsed_time = end_time - start_time
-    sensor_times.append(elapsed_time)
+    finally:
+        end_time = perf_counter()
+        elapsed_time = end_time - start_time
+        sensor_times.append(elapsed_time)
 
 async def process_interval(sensor, interval, progress, active_requests, active_requests_lock, active_requests_task):
     """
