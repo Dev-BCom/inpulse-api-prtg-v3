@@ -83,7 +83,4 @@ def parse_prtg_response(text):
     # Return the parsed data
     return {'histdata': histdata}
 
-def process_prtg_data(data):
-    # Placeholder for any additional data processing if needed
-    # Currently, we simply return the data as-is
-    return data
+
