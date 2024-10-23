@@ -19,11 +19,13 @@ from rich.progress import (
     SpinnerColumn,
     TextColumn,
     BarColumn,
+    TaskProgressColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
-    TaskProgressColumn,
 )
 from rich.logging import RichHandler
+
+from asyncio import Lock
 
 config = get_config()
 
@@ -53,7 +55,7 @@ async def process_sensors():
     # Set up Rich progress
     progress = Progress(
         SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
+        TextColumn("{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
         TimeElapsedColumn(),
@@ -61,6 +63,11 @@ async def process_sensors():
         console=console,
         transient=False,  # Keeps the progress bars visible
     )
+
+    # Initialize active requests counter and lock
+    active_requests = {'count': 0}
+    active_requests_lock = Lock()
+    active_requests_task = progress.add_task("Active Requests: 0", total=1)
 
     # Create a task for total sensors
     total_task = progress.add_task("[bold green]Total Sensors", total=total_sensors)
@@ -73,10 +80,19 @@ async def process_sensors():
         tasks = []
         for sensor in sensors:
             sensor_id = sensor['api_id']
-            sensor_task_id = progress.add_task(f"[cyan]Sensor {sensor_id}", total=1)
+            sensor_task_id = progress.add_task(f"Sensor {sensor_id}", total=1)
             sensor_tasks[sensor_id] = sensor_task_id
             task = asyncio.create_task(
-                process_sensor(sensor, prtg_semaphore, progress, sensor_task_id, sensor_times)
+                process_sensor(
+                    sensor,
+                    prtg_semaphore,
+                    progress,
+                    sensor_task_id,
+                    active_requests,
+                    active_requests_lock,
+                    active_requests_task,
+                    sensor_times
+                )
             )
             tasks.append(task)
         await asyncio.gather(*tasks)
@@ -87,7 +103,7 @@ async def process_sensors():
         avg_time = sum(sensor_times) / len(sensor_times)
         logging.info(f"Average processing time per sensor: {avg_time:.2f} seconds")
 
-async def process_sensor(sensor, prtg_semaphore, progress, sensor_task_id, sensor_times):
+async def process_sensor(sensor, prtg_semaphore, progress, sensor_task_id, active_requests, active_requests_lock, active_requests_task, sensor_times):
     """
     This function processes a sensor's intervals sequentially (oldest to newest)
     but processes multiple sensors concurrently.
@@ -150,7 +166,15 @@ async def process_sensor(sensor, prtg_semaphore, progress, sensor_task_id, senso
             sensor_task_id,
             description=f"Sensor {sensor_id}: Processing interval {idx}/{num_intervals}"
         )
-        await process_interval(sensor, interval, prtg_semaphore)
+        await process_interval(
+            sensor,
+            interval,
+            prtg_semaphore,
+            progress,
+            active_requests,
+            active_requests_lock,
+            active_requests_task
+        )
         progress.advance(sensor_task_id, advance=1)
 
     logging.info(f"Finished processing for sensor {sensor_id}")
@@ -161,7 +185,7 @@ async def process_sensor(sensor, prtg_semaphore, progress, sensor_task_id, senso
     elapsed_time = end_time - start_time
     sensor_times.append(elapsed_time)
 
-async def process_interval(sensor, interval, prtg_semaphore):
+async def process_interval(sensor, interval, prtg_semaphore, progress, active_requests, active_requests_lock, active_requests_task):
     """
     Process an individual interval for a sensor, respecting the semaphore.
     """
@@ -170,20 +194,29 @@ async def process_interval(sensor, interval, prtg_semaphore):
     start_date_str = start_date.strftime("%Y-%m-%d-%H-%M-%S")
     end_date_str = end_date.strftime("%Y-%m-%d-%H-%M-%S")
 
-    async with prtg_semaphore:
-        logging.info(f"Sensor {sensor_id}: Requesting data from {start_date_str} to {end_date_str}")
+    # Increment active requests
+    async with active_requests_lock:
+        active_requests['count'] += 1
+        progress.update(active_requests_task, description=f"Active Requests: {active_requests['count']}")
 
-        # Call PRTG API using get_prtg_data
-        data = await get_prtg_data(sensor_id, start_date_str, end_date_str)
-        active_requests = config['prtg']['max_concurrent_requests'] - prtg_semaphore._value
-        logging.info(f"Active requests: {active_requests}")
+    logging.info(f"Sensor {sensor_id}: Requesting data from {start_date_str} to {end_date_str}")
 
-        if data:
-            # Process and save data
-            processed_data = process_prtg_data(data)
-            await save_data_and_compress(sensor_id, processed_data)
-        else:
-            logging.error(f"No data received for sensor {sensor_id} in interval {start_date_str} to {end_date_str}")
+    # Call PRTG API using get_prtg_data
+    data = await get_prtg_data(sensor_id, start_date_str, end_date_str)
+    active_requests_count = active_requests['count']
+    logging.info(f"Active requests: {active_requests_count}")
+
+    if data:
+        # Process and save data
+        processed_data = process_prtg_data(data)
+        await save_data_and_compress(sensor_id, processed_data)
+    else:
+        logging.error(f"No data received for sensor {sensor_id} in interval {start_date_str} to {end_date_str}")
+
+    # Decrement active requests
+    async with active_requests_lock:
+        active_requests['count'] -= 1
+        progress.update(active_requests_task, description=f"Active Requests: {active_requests['count']}")
 
     # Step 4: Update 'import_filled_until' in the database (after processing the interval)
     await update_import_filled_until(sensor['id'], end_date)
