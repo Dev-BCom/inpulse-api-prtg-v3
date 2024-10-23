@@ -46,7 +46,7 @@ async def save_data_and_compress(sensor_id, data):
                 # Try alternative format
                 start_datetime = datetime.strptime(start_datetime_str, '%m/%d/%Y %H:%M:%S')
             except ValueError:
-                # logging.warning(f"Failed to parse datetime: {datetime_str}")
+                logging.warning(f"Failed to parse datetime: {datetime_str}")
                 continue
 
         day_str = start_datetime.strftime('%Y-%m-%d')
@@ -71,7 +71,7 @@ async def save_data_and_compress(sensor_id, data):
             with open(data_file, 'w', encoding='utf-8') as f:
                 json.dump(items, f, ensure_ascii=False, indent=2, separators=(',', ': '), cls=CustomJSONEncoder)
 
-            # Compress the directory if it's not today or yesterday
+            # Compress the directory if it's not yesterday
             if day != yesterday_str:
                 await compress_and_cleanup(day_dir)
 
@@ -103,6 +103,6 @@ async def compress_and_cleanup(day_dir):
     shutil.rmtree(day_dir)
 
 def is_same_day():
-    # Returns True if the current date is the same as the previous run
-    # For simplicity, we'll return True to avoid compressing yesterday's data during testing
+    # Placeholder function
+    # Implement actual logic to check if it's the same day as the last run
     return True
