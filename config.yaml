@@ -20,3 +20,5 @@ prtg:
 
 data:
   base_directory: 'C:/Users/GabrielGhossoub/Desktop/DataNew'
+
+max_concurrent_sensors: 20

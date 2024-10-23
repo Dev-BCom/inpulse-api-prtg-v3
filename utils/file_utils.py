@@ -8,6 +8,8 @@ import brotli
 from datetime import datetime, date, timedelta
 
 from utils.config import get_config
+import aiofiles
+import asyncio
 
 config = get_config()
 
@@ -64,14 +66,16 @@ async def save_data_and_compress(sensor_id, data):
             # Save data in today's directory
             os.makedirs(day_dir, exist_ok=True)
             data_file = os.path.join(day_dir, 'data.json')
-            with open(data_file, 'w', encoding='utf-8') as f:
-                json.dump(items, f, ensure_ascii=False, indent=2, separators=(',', ': '), cls=CustomJSONEncoder)
+            async with aiofiles.open(data_file, 'w', encoding='utf-8') as f:
+                json_str = json.dumps(items, ensure_ascii=False, indent=2, separators=(',', ': '), cls=CustomJSONEncoder)
+                await f.write(json_str)
         else:
             # Save data and compress the directory
             os.makedirs(day_dir, exist_ok=True)
             data_file = os.path.join(day_dir, 'data.json')
-            with open(data_file, 'w', encoding='utf-8') as f:
-                json.dump(items, f, ensure_ascii=False, indent=2, separators=(',', ': '), cls=CustomJSONEncoder)
+            async with aiofiles.open(data_file, 'w', encoding='utf-8') as f:
+                json_str = json.dumps(items, ensure_ascii=False, indent=2, separators=(',', ': '), cls=CustomJSONEncoder)
+                await f.write(json_str)
 
             # Compress the directory if it's not yesterday
             if day != yesterday_str:
@@ -90,19 +94,26 @@ async def compress_and_cleanup(day_dir):
     tar_file_path = os.path.join(parent_dir, f"{dir_name}.tar")
     br_file_path = f"{tar_file_path}.br"
 
+    loop = asyncio.get_event_loop()
     # Create tar archive
-    with tarfile.open(tar_file_path, "w") as tar:
-        tar.add(day_dir, arcname=os.path.basename(day_dir))
+    await loop.run_in_executor(None, create_tar_archive, day_dir, tar_file_path)
 
     # Compress with Brotli
-    with open(tar_file_path, 'rb') as f_in:
-        compressed_data = brotli.compress(f_in.read())
-    with open(br_file_path, 'wb') as f_out:
-        f_out.write(compressed_data)
+    await loop.run_in_executor(None, compress_brotli, tar_file_path, br_file_path)
 
     # Remove the tar file and the original directory
     os.remove(tar_file_path)
     shutil.rmtree(day_dir)
+
+def create_tar_archive(source_dir, tar_file_path):
+    with tarfile.open(tar_file_path, "w") as tar:
+        tar.add(source_dir, arcname=os.path.basename(source_dir))
+
+def compress_brotli(tar_file_path, br_file_path):
+    with open(tar_file_path, 'rb') as f_in:
+        compressed_data = brotli.compress(f_in.read())
+    with open(br_file_path, 'wb') as f_out:
+        f_out.write(compressed_data)
 
 def is_same_day():
     # Placeholder function
