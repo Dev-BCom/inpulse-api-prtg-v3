@@ -31,7 +31,7 @@ def get_prtg_data_sync(sensor_id, sdate, edate):
 
     while retries < MAX_RETRIES:
         try:
-            logging.info(f"Making request to PRTG API: {url}")
+            # logging.info(f"Making request to PRTG API: {url}")
             headers = {'Accept-Encoding': 'identity'}  # Request uncompressed data
             response = requests.get(url, headers=headers, stream=True, timeout=None)
 
@@ -84,12 +84,12 @@ def get_device_info_sync(device_id, date_after):
 
     while retries < MAX_RETRIES:
         try:
-            logging.info(f"Making request to device-info API: {url}")
+            # logging.info(f"Making request to device-info API: {url}")
             response = requests.get(url, timeout=None)
 
             if response.status_code == 200:
                 data = response.json()
-                logging.info(f"Device info request successful for device_id {device_id}")
+                # logging.info(f"Device info request successful for device_id {device_id}")
                 return data
             else:
                 logging.warning(
