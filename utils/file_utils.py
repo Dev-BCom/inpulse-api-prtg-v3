@@ -14,17 +14,6 @@ import asyncio
 
 config = get_config()
 
-class CustomJSONEncoder(json.JSONEncoder):
-    def encode(self, obj):
-        def list_replacer(o):
-            if isinstance(o, list):
-                return json.dumps(o, ensure_ascii=False, separators=(',', ': '))
-            if isinstance(o, dict):
-                return {k: list_replacer(v) for k, v in o.items()}
-            return o
-        obj = list_replacer(obj)
-        return super().encode(obj)
-
 async def save_data_and_compress(sensor_id, data):
     base_data_dir = config['data']['base_directory']
     sensor_dir = os.path.join(base_data_dir, str(sensor_id))
@@ -36,15 +25,16 @@ async def save_data_and_compress(sensor_id, data):
     histdata = data.get('histdata', [])
     data_by_day = {}
     for item in histdata:
-        datetime_str = item['datetime']
+        datetime_str = item.get('datetime', '')
         # Extract the date part
         if ' - ' in datetime_str:
             # For ranges like "8/7/2024 8:30:00 PM - 8:35:00 PM"
-            start_datetime_str, _ = datetime_str.split(' - ')
+            start_datetime_str, _ = datetime_str.split(' - ', 1)
         else:
             start_datetime_str = datetime_str
 
         try:
+            # Parse the datetime string into a datetime object
             start_datetime = datetime.strptime(start_datetime_str, '%m/%d/%Y %I:%M:%S %p')
         except ValueError:
             try:
@@ -58,8 +48,8 @@ async def save_data_and_compress(sensor_id, data):
 
         data_by_day.setdefault(day_str, []).append(item)
 
-    today_str = date.today().strftime('%Y-%m-%d')
-    yesterday_str = (date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
+    # Get today's date in UTC
+    today_str = datetime.utcnow().strftime('%Y-%m-%d')
 
     for day, items in data_by_day.items():
         day_dir = os.path.join(sensor_dir, day)
@@ -67,29 +57,34 @@ async def save_data_and_compress(sensor_id, data):
             # Save data in today's directory
             os.makedirs(day_dir, exist_ok=True)
             data_file = os.path.join(day_dir, 'data.json')
-            async with aiofiles.open(data_file, 'w', encoding='utf-8') as f:
-                json_str = json.dumps(items, ensure_ascii=False, indent=2, separators=(',', ': '), cls=CustomJSONEncoder)
-                await f.write(json_str)
+            try:
+                async with aiofiles.open(data_file, 'w', encoding='utf-8') as f:
+                    json_str = json.dumps(items, ensure_ascii=False, indent=2, separators=(',', ': '))
+                    await f.write(json_str)
+                # logging.info(f"Saved data for {sensor_id} on {day} to {data_file}")
+            except TypeError as e:
+                logging.error(f"JSON serialization error for sensor {sensor_id} on {day}: {e}")
         else:
             # Save data and compress the directory
             os.makedirs(day_dir, exist_ok=True)
             data_file = os.path.join(day_dir, 'data.json')
-            async with aiofiles.open(data_file, 'w', encoding='utf-8') as f:
-                json_str = json.dumps(items, ensure_ascii=False, indent=2, separators=(',', ': '), cls=CustomJSONEncoder)
-                await f.write(json_str)
+            try:
+                async with aiofiles.open(data_file, 'w', encoding='utf-8') as f:
+                    json_str = json.dumps(items, ensure_ascii=False, indent=2, separators=(',', ': '))
+                    await f.write(json_str)
+                # logging.info(f"Saved data for {sensor_id} on {day} to {data_file}")
+            except TypeError as e:
+                logging.error(f"JSON serialization error for sensor {sensor_id} on {day}: {e}")
+                continue
 
-            # Compress the directory if it's not yesterday
-            if day != yesterday_str:
-                await compress_and_cleanup(day_dir)
-
-    # Compress yesterday's data if the day has changed
-    if not is_same_day():
-        yesterday_dir = os.path.join(sensor_dir, yesterday_str)
-        if os.path.exists(yesterday_dir):
-            await compress_and_cleanup(yesterday_dir)
+            # Compress the directory
+            await compress_and_cleanup(day_dir)
 
 async def compress_and_cleanup(day_dir):
-    # Compress the directory into .tar.br
+    """
+    Compresses the specified directory into a .tar.br file and removes the original directory.
+    """
+    # Compress the directory into .tar
     dir_name = os.path.basename(day_dir)
     parent_dir = os.path.dirname(day_dir)
     tar_file_path = os.path.join(parent_dir, f"{dir_name}.tar")
@@ -103,20 +98,29 @@ async def compress_and_cleanup(day_dir):
     await loop.run_in_executor(None, compress_brotli, tar_file_path, br_file_path)
 
     # Remove the tar file and the original directory
-    os.remove(tar_file_path)
-    shutil.rmtree(day_dir)
+    try:
+        os.remove(tar_file_path)
+        shutil.rmtree(day_dir)
+        # logging.info(f"Compressed and cleaned up directory: {day_dir}")
+    except OSError as e:
+        logging.error(f"Error during compression and cleanup for {day_dir}: {e}")
 
 def create_tar_archive(source_dir, tar_file_path):
+    """
+    Creates a tar archive of the specified source directory.
+    """
     with tarfile.open(tar_file_path, "w") as tar:
         tar.add(source_dir, arcname=os.path.basename(source_dir))
 
 def compress_brotli(tar_file_path, br_file_path):
-    with open(tar_file_path, 'rb') as f_in:
-        compressed_data = brotli.compress(f_in.read())
-    with open(br_file_path, 'wb') as f_out:
-        f_out.write(compressed_data)
-
-def is_same_day():
-    # Placeholder function
-    # Implement actual logic to check if it's the same day as the last run
-    return True
+    """
+    Compresses the specified tar file using Brotli compression.
+    """
+    try:
+        with open(tar_file_path, 'rb') as f_in:
+            compressed_data = brotli.compress(f_in.read())
+        with open(br_file_path, 'wb') as f_out:
+            f_out.write(compressed_data)
+        # logging.info(f"Compressed {tar_file_path} to {br_file_path}")
+    except Exception as e:
+        logging.error(f"Error compressing {tar_file_path}: {e}")

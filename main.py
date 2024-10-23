@@ -15,7 +15,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-@app.get("/process-sensors")
+@app.get("/fill-data")
 async def process_sensors_endpoint(background_tasks: BackgroundTasks):
     background_tasks.add_task(process_sensors)
-    return {"message": "Processing started"}
+    return {"message": "Filling data started!"}

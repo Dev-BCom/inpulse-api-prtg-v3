@@ -5,7 +5,7 @@ import requests
 import logging
 import asyncio
 from utils.config import get_config
-from utils.data_utils import parse_prtg_response
+from utils.data_utils import parse_prtg_response  # Updated below
 
 config = get_config()
 
@@ -27,7 +27,7 @@ def get_prtg_data_sync(sensor_id, sdate, edate):
     retries = 0
     while retries < MAX_RETRIES:
         try:
-            logging.info(f"Making request to PRTG API: {url}")
+            # logging.info(f"Making request to PRTG API: {url}")
             headers = {'Accept-Encoding': 'identity'}  # Request uncompressed data
             response = requests.get(url, headers=headers, stream=True, timeout=None)
             if response.status_code == 200:
@@ -118,4 +118,87 @@ async def get_device_info(device_id, date_after):
     async with device_info_semaphore:
         loop = asyncio.get_event_loop()
         data = await loop.run_in_executor(None, get_device_info_sync, device_id, date_after)
+    return data
+
+import re
+
+def parse_prtg_response(text):
+    """
+    Parses the PRTG API response text and handles duplicate keys by organizing them into arrays.
+    """
+    # Remove newline characters
+    text = text.replace('\n', '')
+
+    # Use regex to find the 'histdata' array
+    match = re.search(r'"histdata":\s*(\[\{.*?\}\])', text)
+    if not match:
+        logging.error("No 'histdata' found in PRTG API response.")
+        return {}
+
+    histdata_text = match.group(1)
+
+    # Split the histdata_text into individual items
+    # This regex accounts for nested structures and ensures proper splitting
+    items_text = re.findall(r'\{([^}]+)\}', histdata_text)
+    histdata = []
+
+    for item_text in items_text:
+        # Initialize an empty dictionary for each item
+        item = {}
+        # Prepare a dictionary to collect fields with potential duplicates
+        fields = {}
+        # Split the item text into key-value pairs
+        # This regex handles keys and values with proper quotation marks
+        pairs = re.findall(r'"([^"]+)"\s*:\s*(?:"([^"]*)"|([-\d.]+))', item_text)
+
+        for pair in pairs:
+            key = pair[0]
+            val_str = pair[1] if pair[1] else pair[2]
+
+            # Collect duplicate keys into lists
+            if key in fields:
+                if isinstance(fields[key], list):
+                    fields[key].append(val_str)
+                else:
+                    fields[key] = [fields[key], val_str]
+            else:
+                fields[key] = val_str
+
+        # Process fields to convert to appropriate types and handle duplicates
+        for key, val in fields.items():
+            if key in ['value', 'value_raw']:
+                if not isinstance(val, list):
+                    val = [val]
+                item[key] = val
+            else:
+                # Attempt to convert to float or keep as string
+                try:
+                    if '.' in val or 'e' in val.lower():
+                        item[key] = float(val)
+                    else:
+                        item[key] = int(val)
+                except ValueError:
+                    item[key] = val
+
+        # Post-processing for specific fields
+        if 'value_raw' in item:
+            new_value_raw = []
+            for v in item['value_raw']:
+                try:
+                    new_value_raw.append(float(v))
+                except ValueError:
+                    new_value_raw.append(v)
+            item['value_raw'] = new_value_raw
+
+        if 'value' in item:
+            item['value'] = [v.replace('°', '') for v in item['value']]
+
+        histdata.append(item)
+
+    # Return the parsed data
+    return {'histdata': histdata}
+
+def process_prtg_data(data):
+    # Placeholder for any additional data processing if needed
+    # Currently, we simply return the data as-is
     return data

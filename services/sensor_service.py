@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from time import perf_counter
 
 from utils.config import get_config
@@ -192,19 +192,22 @@ async def process_interval(sensor, interval, prtg_semaphore, progress, active_re
     sensor_id = sensor['api_id']
     start_date, end_date = interval
     start_date_str = start_date.strftime("%Y-%m-%d-%H-%M-%S")
-    end_date_str = end_date.strftime("%Y-%m-%d-%H-%M-%S")
+
+    # Adjust end_date to include the entire day (23:59:59)
+    end_date_dt = end_date + timedelta(days=1) - timedelta(seconds=1)
+    end_date_str = end_date_dt.strftime("%Y-%m-%d-%H-%M-%S")
 
     # Increment active requests
     async with active_requests_lock:
         active_requests['count'] += 1
         progress.update(active_requests_task, description=f"Active Requests: {active_requests['count']}")
 
-    logging.info(f"Sensor {sensor_id}: Requesting data from {start_date_str} to {end_date_str}")
+    # logging.info(f"Sensor {sensor_id}: Requesting data from {start_date_str} to {end_date_str}")
 
     # Call PRTG API using get_prtg_data
     data = await get_prtg_data(sensor_id, start_date_str, end_date_str)
     active_requests_count = active_requests['count']
-    logging.info(f"Active requests: {active_requests_count}")
+    # logging.info(f"Active requests: {active_requests_count}")
 
     if data:
         # Process and save data
@@ -219,4 +222,4 @@ async def process_interval(sensor, interval, prtg_semaphore, progress, active_re
         progress.update(active_requests_task, description=f"Active Requests: {active_requests['count']}")
 
     # Step 4: Update 'import_filled_until' in the database (after processing the interval)
-    await update_import_filled_until(sensor['id'], end_date)
+    await update_import_filled_until(sensor['id'], end_date_dt)
