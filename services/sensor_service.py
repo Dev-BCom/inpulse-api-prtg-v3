@@ -22,11 +22,15 @@ async def process_sensors():
     # Semaphore to limit concurrent PRTG API requests
     prtg_semaphore = asyncio.Semaphore(config['prtg']['max_concurrent_requests'])
 
-    # Create tasks for each sensor
+    # Create tasks for each sensor (concurrent processing of sensors)
     tasks = [process_sensor(sensor, prtg_semaphore) for sensor in sensors]
     await asyncio.gather(*tasks)
 
 async def process_sensor(sensor, prtg_semaphore):
+    """
+    This function processes a sensor's intervals sequentially (oldest to newest)
+    but processes multiple sensors concurrently.
+    """
     sensor_id = sensor['api_id']
     parent_id = sensor['parent_id']
     import_filled_until = sensor['import_filled_until']
@@ -61,16 +65,16 @@ async def process_sensor(sensor, prtg_semaphore):
     intervals = group_data_into_intervals(device_info, import_start_date_dt)
     logging.info(f"Sensor {sensor_id}: Generated {len(intervals)} intervals.")
 
-    # Process intervals concurrently for this sensor, limited by prtg_semaphore
-    interval_tasks = [
-        process_interval(sensor, interval, prtg_semaphore)
-        for interval in intervals
-    ]
-    await asyncio.gather(*interval_tasks)
+    # Step 3: Process intervals sequentially (oldest to newest)
+    for interval in intervals:
+        await process_interval(sensor, interval, prtg_semaphore)
 
     logging.info(f"Finished processing for sensor {sensor_id}")
 
 async def process_interval(sensor, interval, prtg_semaphore):
+    """
+    Process an individual interval for a sensor, respecting the semaphore.
+    """
     sensor_id = sensor['api_id']
     start_date, end_date = interval
     start_date_str = start_date.strftime("%Y-%m-%d-%H-%M-%S")
@@ -78,7 +82,7 @@ async def process_interval(sensor, interval, prtg_semaphore):
 
     async with prtg_semaphore:
         logging.info(f"Making request to PRTG API for sensor {sensor_id}, interval {start_date_str} to {end_date_str}")
-        
+
         # Call PRTG API using get_prtg_data
         data = await get_prtg_data(sensor_id, start_date_str, end_date_str)
         logging.info(f"Active requests: {config['prtg']['max_concurrent_requests'] - prtg_semaphore._value}")
@@ -90,5 +94,5 @@ async def process_interval(sensor, interval, prtg_semaphore):
         else:
             logging.error(f"No data received for sensor {sensor_id} in interval {start_date_str} to {end_date_str}")
 
-    # Update 'import_filled_until' in the database
+    # Step 4: Update 'import_filled_until' in the database (after processing the interval)
     await update_import_filled_until(sensor['id'], end_date)
