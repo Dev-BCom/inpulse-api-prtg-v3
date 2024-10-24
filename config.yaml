@@ -16,6 +16,6 @@ logging:
   level: 'INFO'
 
 data:
-  base_directory: 'C:/Users/GabrielGhossoub/Desktop/DataNew'
+  base_directory: 'C:/Users/GabrielGhossoub/Desktop/DataNew2'
 
 max_concurrent_sensors: 10
