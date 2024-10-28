@@ -11,7 +11,6 @@ from utils.api_utils import get_device_info, get_prtg_data
 from utils.interval_utils import group_data_into_intervals
 from utils.file_utils import save_data_and_compress
 
-# Import Rich modules
 from rich.console import Console
 from rich.progress import (
     Progress,
@@ -22,36 +21,30 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-from rich.logging import RichHandler
-
 from asyncio import Lock
 
+# Initialize logger
+logger = logging.getLogger(__name__)
+
+# Load configuration
 config = get_config()
 
-# Set up Rich console and logging
+# Initialize Rich Console
 console = Console()
 
-# Configure logging to use RichHandler
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    datefmt="[%X]",
-    handlers=[RichHandler(console=console, show_path=False)]
-)
-
-# Retrieve maximum concurrent sensors from config
+# Maximum number of concurrent sensors to process
 max_concurrent_sensors = config.get('max_concurrent_sensors', 10)
 
 async def process_sensors():
     sensors = await get_sensors()
     total_sensors = len(sensors)
-    logging.info(f"Found {total_sensors} sensors to process.")
+    logger.info(f"Found {total_sensors} sensors to process.")
 
     if total_sensors == 0:
-        logging.info("No sensors to process. Exiting.")
+        logger.info("No sensors to process. Exiting.")
         return
 
-    # Set up Rich progress
+    # Initialize Rich Progress with transient=True to remove completed tasks
     progress = Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -60,27 +53,32 @@ async def process_sensors():
         TimeElapsedColumn(),
         TimeRemainingColumn(),
         console=console,
-        transient=False,  # Keeps the progress bars visible
+        transient=True,  # Ensures completed tasks are removed
     )
 
-    # Initialize active requests counter and lock
+    # Shared state for active requests
     active_requests = {'count': 0}
     active_requests_lock = Lock()
     active_requests_task = progress.add_task("Active Requests: 0", total=1)
 
-    # Create a task for total sensors
+    # Task for total sensors
     total_task = progress.add_task("[bold green]Total Sensors", total=total_sensors)
 
-    # Create an asyncio.Queue and enqueue all sensors
+    # Shared state for worker tasks
+    worker_tasks = {}
+    for i in range(max_concurrent_sensors):
+        worker_task_id = progress.add_task(f"Worker {i}", total=1)
+        worker_tasks[i] = worker_task_id
+
+    # Populate the sensor queue
     sensor_queue = asyncio.Queue()
     for sensor in sensors:
         await sensor_queue.put(sensor)
 
-    # Create a list to hold sensor processing times
     sensor_times = []
 
-    # Define worker coroutine
     async def worker(worker_id):
+        worker_task_id = worker_tasks[worker_id]
         while True:
             sensor = await sensor_queue.get()
             if sensor is None:
@@ -93,43 +91,45 @@ async def process_sensors():
                 active_requests,
                 active_requests_lock,
                 active_requests_task,
-                sensor_times
+                sensor_times,
+                worker_id,
+                worker_task_id
             )
             sensor_queue.task_done()
 
+    # Start processing with progress context
     with progress:
-        # Start worker tasks
+        # Create worker tasks
         workers = [asyncio.create_task(worker(i)) for i in range(max_concurrent_sensors)]
-
         # Wait until all sensors are processed
         await sensor_queue.join()
-
-        # Cancel worker tasks by sending None
+        # Stop workers
         for _ in workers:
             await sensor_queue.put(None)
         await asyncio.gather(*workers, return_exceptions=True)
 
+        # Ensure total sensors task is marked as complete
         progress.update(total_task, completed=total_sensors)
 
-    # Calculate average processing time
+    # Calculate and log average processing time
     if sensor_times:
         avg_time = sum(sensor_times) / len(sensor_times)
-        logging.info(f"Average processing time per sensor: {avg_time:.2f} seconds")
+        logger.info(f"Average processing time per sensor: {avg_time:.2f} seconds")
 
-async def process_sensor(sensor, progress, total_task, active_requests, active_requests_lock, active_requests_task, sensor_times):
-    """
-    Processes a single sensor's intervals.
-    """
+async def process_sensor(sensor, progress, total_task, active_requests, active_requests_lock, active_requests_task, sensor_times, worker_id, worker_task_id):
     start_time = perf_counter()
     sensor_id = sensor['api_id']
     parent_id = sensor['parent_id']
     import_filled_until = sensor['import_filled_until']
     import_start_date = sensor['import_start_date']
 
+    # Update the worker's task
+    progress.update(worker_task_id, description=f"Worker {worker_id}: Sensor {sensor_id}: Getting device info", total=1, completed=0)
+
     if parent_id is None:
-        logging.warning(f"Sensor {sensor_id} has no parent_id, skipping device info request.")
-        progress.update(total_task, advance=1)
-        return  # Skip this sensor if parent_id is None
+        logger.warning(f"Sensor {sensor_id} has no parent_id, skipping device info request.")
+        progress.advance(total_task, advance=1)
+        return
 
     date_after = None
     if import_filled_until:
@@ -137,48 +137,43 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
     elif import_start_date:
         date_after = int(import_start_date.timestamp())
     else:
-        logging.warning(f"Sensor {sensor_id} has no valid date for import_filled_until or import_start_date. Skipping...")
-        progress.update(total_task, advance=1)
+        logger.warning(f"Sensor {sensor_id} has no valid date for import_filled_until or import_start_date. Skipping...")
+        progress.advance(total_task, advance=1)
         return
 
-    # Convert import_start_date to datetime object for interval grouping
     if import_start_date:
         import_start_date_dt = import_start_date
     else:
         import_start_date_dt = datetime.fromtimestamp(date_after)
 
-    # Step 1: Get device info
-    progress_text = f"Sensor {sensor_id}: Getting device info"
-    progress_task_id = progress.add_task(progress_text, total=1)
     try:
+        # Fetch device info
         device_info = await get_device_info(parent_id, date_after)
         if not device_info:
-            logging.warning(f"No device info found for sensor {sensor_id}. Skipping further processing.")
-            progress.update(progress_task_id, description=f"[red]Sensor {sensor_id}: No device info")
-            progress.update(progress_task_id, completed=1)
-            progress.update(total_task, advance=1)
+            logger.warning(f"No device info found for sensor {sensor_id}. Skipping further processing.")
+            progress.update(worker_task_id, description=f"Worker {worker_id}: Sensor {sensor_id}: [red]No device info", completed=1)
+            progress.advance(total_task, advance=1)
             return
 
-        # Step 2: Process data into intervals
-        intervals = group_data_into_intervals(device_info, import_start_date_dt)
+        # Group data into intervals
+        intervals = group_data_into_intervals(device_info, import_start_date_dt, max_interval_days=7)
         num_intervals = len(intervals)
-        logging.info(f"Sensor {sensor_id}: Generated {num_intervals} intervals.")
+        logger.info(f"Sensor {sensor_id}: Generated {num_intervals} intervals.")
 
         if num_intervals == 0:
-            logging.info(f"Sensor {sensor_id}: No intervals to process.")
-            progress.update(progress_task_id, description=f"Sensor {sensor_id}: [red]No intervals")
-            progress.update(progress_task_id, completed=1)
-            progress.update(total_task, advance=1)
+            logger.info(f"Sensor {sensor_id}: No intervals to process.")
+            progress.update(worker_task_id, description=f"Worker {worker_id}: Sensor {sensor_id}: [red]No intervals", completed=1)
+            progress.advance(total_task, advance=1)
             return
 
-        # Update task total to number of intervals
-        progress.update(progress_task_id, total=num_intervals, completed=0)
+        # Update task to reflect the number of intervals
+        progress.update(worker_task_id, total=num_intervals, completed=0)
 
-        # Step 3: Process intervals sequentially (oldest to newest)
         for idx, interval in enumerate(intervals, start=1):
+            # Update description for current interval
             progress.update(
-                progress_task_id,
-                description=f"Sensor {sensor_id}: Processing interval {idx}/{num_intervals}"
+                worker_task_id,
+                description=f"Worker {worker_id}: Sensor {sensor_id}: Processing interval {idx}/{num_intervals}"
             )
             await process_interval(
                 sensor,
@@ -188,35 +183,28 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
                 active_requests_lock,
                 active_requests_task
             )
-            progress.advance(progress_task_id, advance=1
+            # Advance the progress bar
+            progress.advance(worker_task_id)
 
-            )
-
-        logging.info(f"Finished processing for sensor {sensor_id}")
-        # Optionally, update to 'Done' before removing
-        progress.update(progress_task_id, description=f"Sensor {sensor_id}: [bold green]Done")
-        # Remove the task from the progress
-        progress.remove_task(progress_task_id)
-        progress.update(total_task, advance=1)
+        logger.info(f"Finished processing for sensor {sensor_id}")
+        progress.update(worker_task_id, description=f"Worker {worker_id}: Sensor {sensor_id}: [bold green]Done", completed=progress.tasks[worker_task_id].total)
+        # Update the total sensors task
+        progress.advance(total_task, advance=1)
     except Exception as e:
-        logging.error(f"Error processing sensor {sensor_id}: {e}")
-        progress.update(progress_task_id, description=f"Sensor {sensor_id}: [red]Error")
-        progress.update(progress_task_id, completed=1)
-        progress.update(total_task, advance=1)
+        logger.error(f"Error processing sensor {sensor_id}: {e}")
+        progress.update(worker_task_id, description=f"Worker {worker_id}: Sensor {sensor_id}: [red]Error", completed=1)
+        progress.advance(total_task, advance=1)
     finally:
         end_time = perf_counter()
         elapsed_time = end_time - start_time
         sensor_times.append(elapsed_time)
 
 async def process_interval(sensor, interval, progress, active_requests, active_requests_lock, active_requests_task):
-    """
-    Process an individual interval for a sensor.
-    """
     sensor_id = sensor['api_id']
     start_date, end_date = interval
     start_date_str = start_date.strftime("%Y-%m-%d-%H-%M-%S")
 
-    # Adjust end_date to include the entire day (23:59:59)
+    # Calculate end date string
     end_date_dt = end_date + timedelta(days=1) - timedelta(seconds=1)
     end_date_str = end_date_dt.strftime("%Y-%m-%d-%H-%M-%S")
 
@@ -225,21 +213,26 @@ async def process_interval(sensor, interval, progress, active_requests, active_r
         active_requests['count'] += 1
         progress.update(active_requests_task, description=f"Active Requests: {active_requests['count']}")
 
-    # logging.info(f"Sensor {sensor_id}: Requesting data from {start_date_str} to {end_date_str}")
+    try:
+        # Fetch PRTG data
+        data = await get_prtg_data(sensor_id, start_date_str, end_date_str)
 
-    # Call PRTG API using get_prtg_data
-    data = await get_prtg_data(sensor_id, start_date_str, end_date_str)
+        if data:
+            # Save and compress the data
+            await save_data_and_compress(sensor_id, data)
+        else:
+            logger.error(f"No data received for sensor {sensor_id} in interval {start_date_str} to {end_date_str}")
+    except Exception as e:
+        logger.error(f"Error processing interval for sensor {sensor_id}: {e}")
+    finally:
+        # Decrement active requests
+        async with active_requests_lock:
+            active_requests['count'] -= 1
+            progress.update(active_requests_task, description=f"Active Requests: {active_requests['count']}")
 
-    if data:
-        # Directly save data without processing
-        await save_data_and_compress(sensor_id, data)
-    else:
-        logging.error(f"No data received for sensor {sensor_id} in interval {start_date_str} to {end_date_str}")
+        # Update the import_filled_until timestamp
+        await update_import_filled_until(sensor['id'], end_date_dt)
 
-    # Decrement active requests
-    async with active_requests_lock:
-        active_requests['count'] -= 1
-        progress.update(active_requests_task, description=f"Active Requests: {active_requests['count']}")
-
-    # Step 4: Update 'import_filled_until' in the database (after processing the interval)
-    await update_import_filled_until(sensor['id'], end_date_dt)
+# Entry point for the service
+if __name__ == "__main__":
+    asyncio.run(process_sensors())
