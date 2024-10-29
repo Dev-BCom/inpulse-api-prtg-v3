@@ -4,6 +4,8 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from time import perf_counter
+import sys
+from contextlib import redirect_stdout, redirect_stderr
 
 from utils.config import get_config
 from utils.db_utils import get_sensors, update_import_filled_until
@@ -44,7 +46,7 @@ async def process_sensors():
         logger.info("No sensors to process. Exiting.")
         return
 
-    # Initialize Rich Progress with transient=True to remove completed tasks
+    # Initialize Rich Progress without transient
     progress = Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -53,7 +55,7 @@ async def process_sensors():
         TimeElapsedColumn(),
         TimeRemainingColumn(),
         console=console,
-        transient=True,  # Ensures completed tasks are removed
+        refresh_per_second=5,
     )
 
     # Shared state for active requests
@@ -61,8 +63,8 @@ async def process_sensors():
     active_requests_lock = Lock()
     active_requests_task = progress.add_task("Active Requests: 0", total=1)
 
-    # Task for total sensors
-    total_task = progress.add_task("[bold green]Total Sensors", total=total_sensors)
+    # Task for total sensors, include total number in description
+    total_task = progress.add_task(f"[bold green]Total Sensors ({total_sensors})", total=total_sensors)
 
     # Shared state for worker tasks
     worker_tasks = {}
@@ -97,19 +99,20 @@ async def process_sensors():
             )
             sensor_queue.task_done()
 
-    # Start processing with progress context
+    # Suppress console logging during progress display
     with progress:
-        # Create worker tasks
-        workers = [asyncio.create_task(worker(i)) for i in range(max_concurrent_sensors)]
-        # Wait until all sensors are processed
-        await sensor_queue.join()
-        # Stop workers
-        for _ in workers:
-            await sensor_queue.put(None)
-        await asyncio.gather(*workers, return_exceptions=True)
+        with redirect_stdout(sys.__stdout__), redirect_stderr(sys.__stderr__):
+            # Create worker tasks
+            workers = [asyncio.create_task(worker(i)) for i in range(max_concurrent_sensors)]
+            # Wait until all sensors are processed
+            await sensor_queue.join()
+            # Stop workers
+            for _ in workers:
+                await sensor_queue.put(None)
+            await asyncio.gather(*workers, return_exceptions=True)
 
-        # Ensure total sensors task is marked as complete
-        progress.update(total_task, completed=total_sensors)
+            # Ensure total sensors task is marked as complete
+            progress.update(total_task, completed=total_sensors)
 
     # Calculate and log average processing time
     if sensor_times:
