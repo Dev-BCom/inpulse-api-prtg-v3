@@ -127,40 +127,35 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
     import_start_date = sensor['import_start_date']
 
     # Update the worker's task
-    progress.update(worker_task_id, description=f"Worker {worker_id}: Sensor {sensor_id}: Getting device info", total=1, completed=0)
+    progress.update(worker_task_id, description=f"Worker {worker_id}: Sensor {sensor_id}: Checking if processing is needed", total=1, completed=0)
 
     if parent_id is None:
         logger.warning(f"Sensor {sensor_id} has no parent_id, skipping device info request.")
         progress.advance(total_task, advance=1)
         return
 
-    date_after = None
+    current_time_utc = datetime.utcnow()  # Make current time naive
+
     if import_filled_until:
-        # Ensure import_filled_until is timezone-aware in UTC
-        if import_filled_until.tzinfo is None:
-            import_filled_until = import_filled_until.replace(tzinfo=timezone.utc)
-        else:
-            import_filled_until = import_filled_until.astimezone(timezone.utc)
-        current_time_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
-        if import_filled_until >= current_time_utc:
-            logger.info(f"Sensor {sensor_id} already filled until {import_filled_until}, which is current or in the future. Skipping.")
-            progress.advance(total_task, advance=1)
-            return
-        date_after = int(import_filled_until.timestamp())
+        date_after_dt = import_filled_until  # Assume naive datetime
     elif import_start_date:
-        date_after = int(import_start_date.timestamp())
+        date_after_dt = import_start_date  # Assume naive datetime
     else:
         logger.warning(f"Sensor {sensor_id} has no valid date for import_filled_until or import_start_date. Skipping...")
         progress.advance(total_task, advance=1)
         return
 
-    if import_start_date:
-        import_start_date_dt = import_start_date
-    else:
-        import_start_date_dt = datetime.fromtimestamp(date_after, tz=timezone.utc)
+    # NEW CODE: Skip sensor if the last data is within the last 10 minutes
+    if (current_time_utc - date_after_dt).total_seconds() < 600:
+        logger.info(f"Sensor {sensor_id} last data is within the last 10 minutes. Skipping sensor.")
+        progress.advance(total_task, advance=1)
+        return
+
+    date_after = int(date_after_dt.timestamp())
 
     try:
         # Fetch device info
+        progress.update(worker_task_id, description=f"Worker {worker_id}: Sensor {sensor_id}: Getting device info", total=1, completed=0)
         device_info = await get_device_info(parent_id, date_after)
         if not device_info:
             logger.warning(f"No device info found for sensor {sensor_id}. Skipping further processing.")
@@ -169,6 +164,7 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
             return
 
         # Group data into intervals
+        import_start_date_dt = date_after_dt
         intervals = group_data_into_intervals(device_info, import_start_date_dt, max_interval_days=7)
         num_intervals = len(intervals)
         logger.info(f"Sensor {sensor_id}: Generated {num_intervals} intervals.")
@@ -221,11 +217,15 @@ async def process_interval(sensor, interval, progress, active_requests, active_r
     end_date_dt = end_date + timedelta(days=1) - timedelta(seconds=1)
     end_date_str = end_date_dt.strftime("%Y-%m-%d-%H-%M-%S")
 
-    # Ensure end_date_dt is timezone-aware in UTC
-    if end_date_dt.tzinfo is None:
-        end_date_dt = end_date_dt.replace(tzinfo=timezone.utc)
-    else:
-        end_date_dt = end_date_dt.astimezone(timezone.utc)
+    # NEW CODE: Make current time naive
+    now_utc = datetime.utcnow()
+
+    # NEW CODE: Skip processing if end_date_dt is within the last 10 minutes
+    if (now_utc - end_date_dt).total_seconds() < 360:
+        logger.info(f"Skipping interval {start_date_str} to {end_date_str} for sensor {sensor_id} because it is within the last 10 minutes.")
+        # Update import_filled_until to end_date_dt to prevent reprocessing
+        await update_import_filled_until(sensor['id'], end_date_dt)
+        return
 
     # Increment active requests
     async with active_requests_lock:
@@ -262,8 +262,8 @@ async def process_interval(sensor, interval, progress, active_requests, active_r
                     except ValueError:
                         continue
 
-                # Ensure the datetime is timezone-aware in UTC
-                start_datetime = start_datetime.replace(tzinfo=timezone.utc)
+                # Ensure the datetime is naive
+                start_datetime = start_datetime  # Already naive
 
                 if (max_timestamp is None) or (start_datetime > max_timestamp):
                     max_timestamp = start_datetime
