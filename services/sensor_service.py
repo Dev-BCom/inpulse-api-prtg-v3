@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time
 from time import perf_counter
 import sys
 from contextlib import redirect_stdout, redirect_stderr
@@ -145,11 +145,7 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
         progress.advance(total_task, advance=1)
         return
 
-    # NEW CODE: Skip sensor if the last data is within the last 10 minutes
-    if (current_time_utc - date_after_dt).total_seconds() < 600:
-        logger.info(f"Sensor {sensor_id} last data is within the last 10 minutes. Skipping sensor.")
-        progress.advance(total_task, advance=1)
-        return
+    # Removed the last 10-minute check here
 
     date_after = int(date_after_dt.timestamp())
 
@@ -211,21 +207,20 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
 async def process_interval(sensor, interval, progress, active_requests, active_requests_lock, active_requests_task):
     sensor_id = sensor['api_id']
     start_date, end_date = interval
-    start_date_str = start_date.strftime("%Y-%m-%d-%H-%M-%S")
-
-    # Calculate end date string
-    end_date_dt = end_date + timedelta(days=1) - timedelta(seconds=1)
-    end_date_str = end_date_dt.strftime("%Y-%m-%d-%H-%M-%S")
-
-    # NEW CODE: Make current time naive
     now_utc = datetime.utcnow()
 
-    # NEW CODE: Skip processing if end_date_dt is within the last 10 minutes
-    if (now_utc - end_date_dt).total_seconds() < 360:
-        logger.info(f"Skipping interval {start_date_str} to {end_date_str} for sensor {sensor_id} because it is within the last 10 minutes.")
-        # Update import_filled_until to end_date_dt to prevent reprocessing
-        await update_import_filled_until(sensor['id'], end_date_dt)
-        return
+    # Start date time is start_date at time 00:00:00
+    start_date_dt = datetime.combine(start_date, time.min)
+
+    # End date time is end_date at time 23:59:59, unless it's today or in the future
+    end_date_dt = datetime.combine(end_date, time.max)
+    if end_date_dt > now_utc:
+        end_date_dt = now_utc
+
+    start_date_str = start_date_dt.strftime("%Y-%m-%d-%H-%M-%S")
+    end_date_str = end_date_dt.strftime("%Y-%m-%d-%H-%M-%S")
+
+    # Removed the last 10-minute check here
 
     # Increment active requests
     async with active_requests_lock:
