@@ -1,5 +1,3 @@
-# services/sensor_service.py
-
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone, time
@@ -145,8 +143,6 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
         progress.advance(total_task, advance=1)
         return
 
-    # Removed the last 10-minute check here
-
     date_after = int(date_after_dt.timestamp())
 
     try:
@@ -159,9 +155,23 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
             progress.advance(total_task, advance=1)
             return
 
+        # Extract cache_last_updated and device_data_list
+        cache_last_updated_str = device_info.get('cache_last_updated')
+        device_data_list = device_info.get('data', [])
+
+        if not cache_last_updated_str:
+            logger.warning(f"No cache_last_updated in device_info for sensor {sensor_id}")
+            cache_last_updated = datetime.utcnow()
+        else:
+            try:
+                cache_last_updated = datetime.fromisoformat(cache_last_updated_str)
+            except ValueError:
+                logger.warning(f"Invalid cache_last_updated format: {cache_last_updated_str} for sensor {sensor_id}")
+                cache_last_updated = datetime.utcnow()
+
         # Group data into intervals
         import_start_date_dt = date_after_dt
-        intervals = group_data_into_intervals(device_info, import_start_date_dt, max_interval_days=7)
+        intervals = group_data_into_intervals(device_data_list, import_start_date_dt, max_interval_days=7)
         num_intervals = len(intervals)
         logger.info(f"Sensor {sensor_id}: Generated {num_intervals} intervals.")
 
@@ -169,6 +179,8 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
             logger.info(f"Sensor {sensor_id}: No intervals to process.")
             progress.update(worker_task_id, description=f"Worker {worker_id}: Sensor {sensor_id}: [red]No intervals", completed=1)
             progress.advance(total_task, advance=1)
+            # Update import_filled_until with cache_last_updated
+            await update_import_filled_until(sensor['id'], cache_last_updated)
             return
 
         # Update task to reflect the number of intervals
@@ -186,7 +198,8 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
                 progress,
                 active_requests,
                 active_requests_lock,
-                active_requests_task
+                active_requests_task,
+                cache_last_updated  # Pass cache_last_updated
             )
             # Advance the progress bar
             progress.advance(worker_task_id)
@@ -204,23 +217,20 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
         elapsed_time = end_time - start_time
         sensor_times.append(elapsed_time)
 
-async def process_interval(sensor, interval, progress, active_requests, active_requests_lock, active_requests_task):
+async def process_interval(sensor, interval, progress, active_requests, active_requests_lock, active_requests_task, cache_last_updated):
     sensor_id = sensor['api_id']
     start_date, end_date = interval
-    now_utc = datetime.utcnow()
 
     # Start date time is start_date at time 00:00:00
     start_date_dt = datetime.combine(start_date, time.min)
 
-    # End date time is end_date at time 23:59:59, unless it's today or in the future
+    # End date time is end_date at time 23:59:59, unless it's after 'cache_last_updated'
     end_date_dt = datetime.combine(end_date, time.max)
-    if end_date_dt > now_utc:
-        end_date_dt = now_utc
+    if end_date_dt > cache_last_updated:
+        end_date_dt = cache_last_updated
 
     start_date_str = start_date_dt.strftime("%Y-%m-%d-%H-%M-%S")
     end_date_str = end_date_dt.strftime("%Y-%m-%d-%H-%M-%S")
-
-    # Removed the last 10-minute check here
 
     # Increment active requests
     async with active_requests_lock:
@@ -267,12 +277,12 @@ async def process_interval(sensor, interval, progress, active_requests, active_r
                 # Update the import_filled_until timestamp to the max timestamp
                 await update_import_filled_until(sensor['id'], max_timestamp)
             else:
-                # If no data was retrieved, use the end_date_dt
-                await update_import_filled_until(sensor['id'], end_date_dt)
+                # If no data was retrieved, use the cache_last_updated
+                await update_import_filled_until(sensor['id'], cache_last_updated)
         else:
             logger.error(f"No data received for sensor {sensor_id} in interval {start_date_str} to {end_date_str}")
-            # Even if no data is received, update the import_filled_until to end_date_dt to prevent reprocessing
-            await update_import_filled_until(sensor['id'], end_date_dt)
+            # Even if no data is received, update the import_filled_until to cache_last_updated to prevent reprocessing
+            await update_import_filled_until(sensor['id'], cache_last_updated)
     except Exception as e:
         logger.error(f"Error processing interval for sensor {sensor_id}: {e}")
     finally:
