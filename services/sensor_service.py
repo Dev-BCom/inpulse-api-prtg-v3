@@ -132,8 +132,6 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
         progress.advance(total_task, advance=1)
         return
 
-    current_time_utc = datetime.utcnow()  # Make current time naive
-
     if import_filled_until:
         date_after_dt = import_filled_until  # Assume naive datetime
     elif import_start_date:
@@ -153,6 +151,8 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
             logger.warning(f"No device info found for sensor {sensor_id}. Skipping further processing.")
             progress.update(worker_task_id, description=f"Worker {worker_id}: Sensor {sensor_id}: [red]No device info", completed=1)
             progress.advance(total_task, advance=1)
+            # Update import_filled_until with cache_last_updated
+            await update_import_filled_until(sensor['id'], datetime.utcnow())
             return
 
         # Extract cache_last_updated and device_data_list
@@ -179,7 +179,7 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
             logger.info(f"Sensor {sensor_id}: No intervals to process.")
             progress.update(worker_task_id, description=f"Worker {worker_id}: Sensor {sensor_id}: [red]No intervals", completed=1)
             progress.advance(total_task, advance=1)
-            # Update import_filled_until with cache_last_updated
+            # Always update import_filled_until with cache_last_updated
             await update_import_filled_until(sensor['id'], cache_last_updated)
             return
 
@@ -208,10 +208,14 @@ async def process_sensor(sensor, progress, total_task, active_requests, active_r
         progress.update(worker_task_id, description=f"Worker {worker_id}: Sensor {sensor_id}: [bold green]Done", completed=progress.tasks[worker_task_id].total)
         # Update the total sensors task
         progress.advance(total_task, advance=1)
+        # Always update import_filled_until with cache_last_updated
+        await update_import_filled_until(sensor['id'], cache_last_updated)
     except Exception as e:
         logger.error(f"Error processing sensor {sensor_id}: {e}")
         progress.update(worker_task_id, description=f"Worker {worker_id}: Sensor {sensor_id}: [red]Error", completed=1)
         progress.advance(total_task, advance=1)
+        # Always update import_filled_until with cache_last_updated in case of error
+        await update_import_filled_until(sensor['id'], cache_last_updated)
     finally:
         end_time = perf_counter()
         elapsed_time = end_time - start_time
@@ -244,45 +248,8 @@ async def process_interval(sensor, interval, progress, active_requests, active_r
         if data:
             # Save and compress the data
             await save_data_and_compress(sensor_id, data)
-
-            # Extract maximum datetime from the data
-            max_timestamp = None
-            histdata = data.get('histdata', [])
-            for item in histdata:
-                datetime_str = item.get('datetime', '')
-                # Extract the start date part
-                if ' - ' in datetime_str:
-                    # For ranges like "8/7/2024 8:30:00 PM - 8:35:00 PM"
-                    start_datetime_str, _ = datetime_str.split(' - ', 1)
-                else:
-                    start_datetime_str = datetime_str
-
-                try:
-                    # Parse the datetime string into a datetime object
-                    start_datetime = datetime.strptime(start_datetime_str, '%m/%d/%Y %I:%M:%S %p')
-                except ValueError:
-                    try:
-                        # Try alternative format without AM/PM
-                        start_datetime = datetime.strptime(start_datetime_str, '%m/%d/%Y %H:%M:%S')
-                    except ValueError:
-                        continue
-
-                # Ensure the datetime is naive
-                start_datetime = start_datetime  # Already naive
-
-                if (max_timestamp is None) or (start_datetime > max_timestamp):
-                    max_timestamp = start_datetime
-
-            if max_timestamp:
-                # Update the import_filled_until timestamp to the max timestamp
-                await update_import_filled_until(sensor['id'], max_timestamp)
-            else:
-                # If no data was retrieved, use the cache_last_updated
-                await update_import_filled_until(sensor['id'], cache_last_updated)
         else:
             logger.error(f"No data received for sensor {sensor_id} in interval {start_date_str} to {end_date_str}")
-            # Even if no data is received, update the import_filled_until to cache_last_updated to prevent reprocessing
-            await update_import_filled_until(sensor['id'], cache_last_updated)
     except Exception as e:
         logger.error(f"Error processing interval for sensor {sensor_id}: {e}")
     finally:
