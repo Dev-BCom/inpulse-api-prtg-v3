@@ -9,7 +9,9 @@
             "module": "uvicorn",
             "args": [
                 "main:app",
-                "--reload"
+                "--reload",
+                "--port",
+                "8001"
             ],
             "jinja": true
         }

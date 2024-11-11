@@ -30,8 +30,8 @@ async def get_prtg_data(sensor_id, sdate, edate):
             if response.status_code == 200:
                 data = parse_prtg_response(response.text)
                 return data
-            else:
-                logging.warning(f"Non-200 response: {response.status_code} for sensor {sensor_id}, URL: {response.url}")
+            # else:
+            #     logging.warning(f"Non-200 response: {response.status_code} for sensor {sensor_id}, URL: {response.url}")
         except Exception as e:
             logging.warning(f"Error for sensor {sensor_id}, URL: {url}: {e}, retrying... ({retries + 1}/{MAX_RETRIES})")
 
@@ -56,8 +56,8 @@ async def get_device_info(device_id, date_after):
             response = await asyncio.wrap_future(session.get(url, timeout=None))
             if response.status_code == 200:
                 return response.json()
-            else:
-                logging.warning(f"Non-200 response: {response.status_code} for device_id {device_id}, URL: {response.url}")
+            # else:
+            #     logging.warning(f"Non-200 response: {response.status_code} for device_id {device_id}, URL: {response.url}")
     except Exception as e:
         logging.warning(f"Error for device_id {device_id}, URL: {url}: {e}")
 

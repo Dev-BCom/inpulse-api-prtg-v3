@@ -1,11 +1,11 @@
-# uitls / file_utils.py
-
 import os
 import json
 import shutil
 import tarfile
 import brotli
 from datetime import datetime, timedelta
+
+from fastapi import logger
 
 from utils.config import get_config
 import aiofiles
@@ -14,9 +14,89 @@ import asyncio
 
 config = get_config()
 
-async def save_data_and_compress(sensor_id, data):
+async def save_data_and_compress(sensor_id, data, overwrite=False):
     """
     Saves sensor data into JSON files organized by day and compresses past days' data.
+
+    Args:
+        sensor_id (str): The unique identifier for the sensor.
+        data (dict): The data payload containing 'histdata'.
+        overwrite (bool): If True, existing files will be overwritten.
+    """
+    base_data_dir = config['data']['base_directory']
+    sensor_dir = os.path.join(base_data_dir, str(sensor_id))
+
+    # Ensure the sensor directory exists asynchronously
+    await ensure_directory(sensor_dir)
+
+    # Organize data by day
+    histdata = data.get('histdata', [])
+    data_by_day = {}
+    for item in histdata:
+        datetime_str = item.get('datetime', '')
+        # Extract the start date part
+        if ' - ' in datetime_str:
+            # For ranges like "8/7/2024 8:30:00 PM - 8:35:00 PM"
+            start_datetime_str, _ = datetime_str.split(' - ', 1)
+        else:
+            start_datetime_str = datetime_str
+
+        try:
+            # Parse the datetime string into a datetime object
+            start_datetime = datetime.strptime(start_datetime_str, '%m/%d/%Y %I:%M:%S %p')
+        except ValueError:
+            try:
+                # Try alternative format without AM/PM
+                start_datetime = datetime.strptime(start_datetime_str, '%m/%d/%Y %H:%M:%S')
+            except ValueError:
+                continue
+
+        day_str = start_datetime.strftime('%Y-%m-%d')
+        data_by_day.setdefault(day_str, []).append(item)
+
+    # Get today's date in UTC
+    today_str = datetime.utcnow().strftime('%Y-%m-%d')
+
+    # Prepare compression tasks for past days
+    compression_tasks = []
+
+    for day, items in data_by_day.items():
+        day_dir = os.path.join(sensor_dir, day)
+        await ensure_directory(day_dir)
+
+        data_file = os.path.join(day_dir, 'data.json')
+        try:
+            if overwrite:
+                async with aiofiles.open(data_file, 'w', encoding='utf-8') as f:
+                    json_str = json.dumps(items, ensure_ascii=False, indent=2, separators=(',', ': '))
+                    await f.write(json_str)
+            else:
+                # If overwrite is False and file exists, append data
+                if os.path.exists(data_file):
+                    async with aiofiles.open(data_file, 'r', encoding='utf-8') as f:
+                        existing_data = json.loads(await f.read())
+                    existing_data.extend(items)
+                    async with aiofiles.open(data_file, 'w', encoding='utf-8') as f:
+                        json_str = json.dumps(existing_data, ensure_ascii=False, indent=2, separators=(',', ': '))
+                        await f.write(json_str)
+                else:
+                    async with aiofiles.open(data_file, 'w', encoding='utf-8') as f:
+                        json_str = json.dumps(items, ensure_ascii=False, indent=2, separators=(',', ': '))
+                        await f.write(json_str)
+        except TypeError:
+            continue
+
+        if day != today_str:
+            # Schedule compression and cleanup for past days
+            compression_tasks.append(compress_and_cleanup(day_dir))
+
+    if compression_tasks:
+        # Run all compression tasks concurrently
+        await asyncio.gather(*compression_tasks)
+
+async def save_data_scheduler(sensor_id, data):
+    """
+    Saves sensor data fetched by the scheduler into JSON files without overwriting existing global process files.
 
     Args:
         sensor_id (str): The unique identifier for the sensor.
@@ -65,9 +145,18 @@ async def save_data_and_compress(sensor_id, data):
 
         data_file = os.path.join(day_dir, 'data.json')
         try:
-            async with aiofiles.open(data_file, 'w', encoding='utf-8') as f:
-                json_str = json.dumps(items, ensure_ascii=False, indent=2, separators=(',', ': '))
-                await f.write(json_str)
+            # Always append data for scheduler to avoid overwriting global process files
+            if os.path.exists(data_file):
+                async with aiofiles.open(data_file, 'r', encoding='utf-8') as f:
+                    existing_data = json.loads(await f.read())
+                existing_data.extend(items)
+                async with aiofiles.open(data_file, 'w', encoding='utf-8') as f:
+                    json_str = json.dumps(existing_data, ensure_ascii=False, indent=2, separators=(',', ': '))
+                    await f.write(json_str)
+            else:
+                async with aiofiles.open(data_file, 'w', encoding='utf-8') as f:
+                    json_str = json.dumps(items, ensure_ascii=False, indent=2, separators=(',', ': '))
+                    await f.write(json_str)
         except TypeError:
             continue
 
@@ -78,7 +167,6 @@ async def save_data_and_compress(sensor_id, data):
     if compression_tasks:
         # Run all compression tasks concurrently
         await asyncio.gather(*compression_tasks)
-
 
 async def ensure_directory(path):
     """
@@ -94,7 +182,6 @@ async def ensure_directory(path):
         await asyncio.to_thread(os.makedirs, path, exist_ok=True)
     except Exception:
         pass
-
 
 async def compress_and_cleanup(day_dir):
     """
@@ -119,9 +206,8 @@ async def compress_and_cleanup(day_dir):
         # Remove the tar file and the original directory asynchronously
         await asyncio.to_thread(os.remove, tar_file_path)
         await asyncio.to_thread(shutil.rmtree, day_dir)
-    except Exception:
-        pass
-
+    except Exception as e:
+        logger.error(f"Error during compression and cleanup for {day_dir}: {e}")
 
 def create_tar_archive(source_dir, tar_file_path):
     """
@@ -134,9 +220,9 @@ def create_tar_archive(source_dir, tar_file_path):
     try:
         with tarfile.open(tar_file_path, "w") as tar:
             tar.add(source_dir, arcname=os.path.basename(source_dir))
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error creating tar archive for {source_dir}: {e}")
         raise
-
 
 def compress_brotli(tar_file_path, br_file_path):
     """
@@ -151,5 +237,6 @@ def compress_brotli(tar_file_path, br_file_path):
             compressed_data = brotli.compress(f_in.read())
         with open(br_file_path, 'wb') as f_out:
             f_out.write(compressed_data)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error compressing tar file {tar_file_path}: {e}")
         raise

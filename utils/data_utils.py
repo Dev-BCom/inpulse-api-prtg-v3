@@ -13,7 +13,7 @@ def parse_prtg_response(text):
     # Use regex to find the 'histdata' array
     match = re.search(r'"histdata":\s*(\[\{.*?\}\])', text)
     if not match:
-        logging.error("No 'histdata' found in PRTG API response.")
+        # logging.error("No 'histdata' found in PRTG API response.")
         return {}
 
     histdata_text = match.group(1)

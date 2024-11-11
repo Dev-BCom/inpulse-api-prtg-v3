@@ -10,7 +10,7 @@ api:
   base_url: 'http://192.168.10.174:1237'
   prtg_url: 'https://nms.bcomintelsat.com/api/inpulse.json'
   apitoken: 'AIF34EXINKSKOB3Y4BQUQGOZYJQFRNB6OZFSJM2MJI======'
-  max_concurrent_device_info_requests: 30 
+  max_concurrent_device_info_requests: 200 
 
 logging:
   level: 'INFO'
@@ -18,4 +18,10 @@ logging:
 data:
   base_directory: 'C:/Users/GabrielGhossoub/Desktop/DataNew2'
 
-max_concurrent_sensors: 10
+max_concurrent_sensors: 5
+
+scheduler:
+  request_limit: 250
+  max_concurrent_workers: 250
+  fetch_interval_minutes: 5  
+

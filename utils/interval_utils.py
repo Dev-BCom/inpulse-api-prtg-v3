@@ -9,8 +9,8 @@ def group_data_into_intervals(device_info, import_start_date, max_interval_days=
         if not day_str:
             continue
         try:
-            day_date = datetime.strptime(day_str, "%Y%m%d")
-            if day_date >= import_start_date:
+            day_date = datetime.strptime(day_str, "%Y%m%d").date()  # Only get the date part
+            if day_date >= import_start_date.date():  # Compare only the date part
                 days.append(day_date)
         except ValueError:
             continue
@@ -36,3 +36,4 @@ def group_data_into_intervals(device_info, import_start_date, max_interval_days=
     intervals.append((start_day, end_day))
 
     return intervals
+

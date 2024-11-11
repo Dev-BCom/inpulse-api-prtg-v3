@@ -4,11 +4,12 @@ import logging
 import os
 from fastapi import FastAPI, BackgroundTasks
 from contextlib import asynccontextmanager
-from services.sensor_service import process_sensors
+from services.sensor_service import process_sensors, scheduled_process_sensors
 from utils.db_utils import init_mysql_pool, close_mysql_pool
 from rich.console import Console
 from rich.logging import RichHandler
 from logging.handlers import RotatingFileHandler
+import asyncio
 
 # Load configuration
 from utils.config import get_config
@@ -52,15 +53,23 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 # Create the FastAPI app with lifespan
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup event: Initialize MySQL pool
+    # Startup event: Initialize MySQL pool and start scheduler
     await init_mysql_pool()
+    logger.info("Starting scheduler task.")
+    scheduler_task = asyncio.create_task(scheduled_process_sensors())
     yield
-    # Shutdown event: Close MySQL pool
+    # Shutdown event: Close MySQL pool and cancel scheduler
+    logger.info("Shutting down scheduler task.")
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        logger.info("Scheduler task cancelled.")
     await close_mysql_pool()
 
 app = FastAPI(lifespan=lifespan)
 
 @app.get("/fill-data")
 async def process_sensors_endpoint(background_tasks: BackgroundTasks):
-    background_tasks.add_task(process_sensors)
+    background_tasks.add_task(process_sensors, overwrite=True)
     return {"message": "Filling data started!"}
